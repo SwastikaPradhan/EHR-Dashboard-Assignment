@@ -18,6 +18,7 @@ export default function PatientForm({ patient, onClose }: PatientFormProps) {
     e.preventDefault();
 
     const payload = {
+      id:patient?.id,
       resourceType: "Patient",
       name: [{ given: [givenName], family: familyName }],
       gender,
@@ -37,7 +38,10 @@ export default function PatientForm({ patient, onClose }: PatientFormProps) {
         body: JSON.stringify(payload),
       });
 
-      if (!res.ok) throw new Error("Failed to save patient");
+      if (!res.ok) {
+        const text=await res.text();
+        throw new Error("Failed to save patient");
+      }
 
       const updatedPatient = await res.json(); // get created/updated patient from API
       onClose(updatedPatient); // pass back the updated patient to parent
