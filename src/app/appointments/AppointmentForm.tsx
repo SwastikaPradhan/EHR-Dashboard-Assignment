@@ -1,43 +1,128 @@
+
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import FormInput from "./FormInput";
+import FormSelect from "./FormSelect";
+import FormTextArea from "./FormTextArea";
+import SubmitButtons from "./SubmitButtons";
 
 type AppointmentFormProps = {
   appointment?: any;
   onSave: (data: any) => void;
   onCancel: () => void;
-  timeSlots: string[];
-  appointmentTypes: string[];
-  providers: string[];
 };
 
-export default function AppointmentForm({
-  appointment,
-  onSave,
-  onCancel,
-  timeSlots,
-  appointmentTypes,
-  providers,
-}: AppointmentFormProps) {
+export default function AppointmentForm({ appointment, onSave, onCancel }: AppointmentFormProps) {
+  const [timeSlots, setTimeSlots] = useState<string[]>([]);
+  const [appointmentTypes, setAppointmentTypes] = useState<string[]>([]);
+  const [providers, setProviders] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
   const [formData, setFormData] = useState({
     patientName: appointment?.patientName || "",
     patientId: appointment?.patientId || "",
-    date: appointment?.date || "2024-01-25",
-    time: appointment?.time || "09:00",
+    date: appointment?.date || "",
+    time: appointment?.time || "",
     duration: appointment?.duration || 30,
-    type: appointment?.type || "Check-up",
-    status: appointment?.status || "Scheduled",
-    provider: appointment?.provider || "Dr. Smith",
+    type: appointment?.type || "",
+    status: appointment?.status || "proposed",
+    provider: appointment?.provider || "",
     phone: appointment?.phone || "",
     notes: appointment?.notes || "",
   });
 
+  useEffect(() => {
+    async function fetchProviders() {
+      try {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_FHIR_BASE}/Practitioner?_count=10`);
+        const data = await res.json();
+        setProviders(data.entry?.map((e: any) => e.resource.name?.[0]?.text) || []);
+      } catch (e) {
+        console.error("Failed to fetch providers", e);
+      }
+    }
+
+    async function fetchAppointmentTypes() {
+      setAppointmentTypes(["Check-up", "Follow-up", "Consultation"]);
+    }
+
+    async function fetchTimeSlots() {
+      try {
+        const today = new Date().toISOString().split("T")[0];
+        const res = await fetch(`${process.env.NEXT_PUBLIC_FHIR_BASE}/Slot?start=ge${today}&status=free&_count=10`);
+        const data = await res.json();
+        setTimeSlots(
+          data.entry?.map((e: any) =>
+            new Date(e.resource.start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+          ) || []
+        );
+      } catch (e) {
+        console.error("Failed to fetch slots", e);
+      }
+    }
+
+    fetchProviders();
+    fetchAppointmentTypes();
+    fetchTimeSlots();
+  }, []);
+
   const handleInputChange = (field: string, value: any) => {
-    setFormData({ ...formData, [field]: value });
+    setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
-  const handleSubmit = () => {
-    onSave(formData);
+  const handleSubmit = async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      // ✅ Build start and end time safely
+      if (!formData.date || !formData.time) throw new Error("Please select date and time.");
+      const startDateTime = `${formData.date}T${formData.time}:00Z`;
+      const endDate = new Date(startDateTime);
+      if (isNaN(endDate.getTime())) throw new Error("Invalid date/time format.");
+      endDate.setMinutes(endDate.getMinutes() + formData.duration);
+
+      const appointmentResource = {
+        resourceType: "Appointment",
+        status: formData.status,
+        start: startDateTime,
+        end: endDate.toISOString(),
+        minutesDuration: formData.duration,
+        participant: [
+          {
+            actor: { reference: `Patient/${formData.patientId}`, display: formData.patientName },
+            status: "accepted",
+          },
+          {
+            actor: { display: formData.provider },
+            status: "accepted",
+          },
+        ],
+        serviceCategory: [{ coding: [{ code: "appt", display: formData.type }] }],
+        comment: formData.notes,
+      };
+
+      const url = appointment
+        ? `${process.env.NEXT_PUBLIC_FHIR_BASE}/Appointment/${appointment.id}`
+        : `${process.env.NEXT_PUBLIC_FHIR_BASE}/Appointment`;
+
+      const res = await fetch(url, {
+        method: appointment ? "PUT" : "POST",
+        headers: { "Content-Type": "application/fhir+json" },
+        body: JSON.stringify(appointmentResource),
+      });
+
+      if (!res.ok) throw new Error(`Failed to save appointment: ${res.status}`);
+      const saved = await res.json();
+      onSave(saved);
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message || "An error occurred while saving.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -45,177 +130,21 @@ export default function AppointmentForm({
       <h3 className="text-lg font-semibold text-gray-900 mb-4">
         {appointment ? "Edit Appointment" : "New Appointment"}
       </h3>
+      {error && <p className="text-red-500 mb-3 text-sm">{error}</p>}
+
       <div className="space-y-4">
-        {/* Patient Name */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Patient Name
-          </label>
-          <input
-            type="text"
-            value={formData.patientName}
-            onChange={(e) => handleInputChange("patientName", e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          />
-        </div>
+        <FormInput label="Patient Name" value={formData.patientName} onChange={(v:any) => handleInputChange("patientName", v)} />
+        <FormInput label="Patient ID" value={formData.patientId} onChange={(v:any) => handleInputChange("patientId", v)} />
+        <FormInput type="date" label="Date" value={formData.date} onChange={(v:any) => handleInputChange("date", v)} />
 
-        {/* Patient ID */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Patient ID
-          </label>
-          <input
-            type="text"
-            value={formData.patientId}
-            onChange={(e) => handleInputChange("patientId", e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          />
-        </div>
+        <FormSelect label="Time" value={formData.time} onChange={(v) => handleInputChange("time", v)} options={timeSlots} placeholder="Select time" />
+        <FormSelect label="Duration" value={formData.duration} onChange={(v) => handleInputChange("duration", parseInt(v))} options={[15, 30, 45, 60]} formatOption={(o) => `${o} min`} />
+        <FormSelect label="Type" value={formData.type} onChange={(v) => handleInputChange("type", v)} options={appointmentTypes} placeholder="Select type" />
+        <FormSelect label="Provider" value={formData.provider} onChange={(v) => handleInputChange("provider", v)} options={providers} placeholder="Select provider" />
 
-        {/* Date & Time */}
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Date
-            </label>
-            <input
-              type="date"
-              value={formData.date}
-              onChange={(e) => handleInputChange("date", e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Time
-            </label>
-            <select
-              value={formData.time}
-              onChange={(e) => handleInputChange("time", e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            >
-              {timeSlots.map((time) => (
-                <option key={time} value={time}>
-                  {time}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
+        <FormTextArea label="Notes" value={formData.notes} onChange={(v:any) => handleInputChange("notes", v)} />
 
-        {/* Duration & Type */}
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Duration (min)
-            </label>
-            <select
-              value={formData.duration}
-              onChange={(e) =>
-                handleInputChange("duration", parseInt(e.target.value))
-              }
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            >
-              <option value={15}>15 min</option>
-              <option value={30}>30 min</option>
-              <option value={45}>45 min</option>
-              <option value={60}>60 min</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Type
-            </label>
-            <select
-              value={formData.type}
-              onChange={(e) => handleInputChange("type", e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            >
-              {appointmentTypes.map((type) => (
-                <option key={type} value={type}>
-                  {type}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {/* Provider */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Provider
-          </label>
-          <select
-            value={formData.provider}
-            onChange={(e) => handleInputChange("provider", e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          >
-            {providers.map((provider) => (
-              <option key={provider} value={provider}>
-                {provider}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {/* Phone */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Phone
-          </label>
-          <input
-            type="tel"
-            value={formData.phone}
-            onChange={(e) => handleInputChange("phone", e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          />
-        </div>
-
-        {/* Status */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Status
-          </label>
-          <select
-            value={formData.status}
-            onChange={(e) => handleInputChange("status", e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          >
-            <option value="Scheduled">Scheduled</option>
-            <option value="Confirmed">Confirmed</option>
-            <option value="Pending">Pending</option>
-            <option value="Completed">Completed</option>
-          </select>
-        </div>
-
-        {/* Notes */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Notes
-          </label>
-          <textarea
-            value={formData.notes}
-            onChange={(e) => handleInputChange("notes", e.target.value)}
-            rows={3}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
-          />
-        </div>
-
-        {/* Buttons */}
-        <div className="flex space-x-3 pt-4">
-          <button
-            onClick={handleSubmit}
-            className="flex-1 py-2 px-4 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-          >
-            {appointment ? "Update" : "Create"}
-          </button>
-          <button
-            onClick={onCancel}
-            className="flex-1 py-2 px-4 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50"
-          >
-            Cancel
-          </button>
-        </div>
+        <SubmitButtons loading={loading} isEdit={!!appointment} onSubmit={handleSubmit} onCancel={onCancel} />
       </div>
     </div>
   );
